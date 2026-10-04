@@ -26,3 +26,32 @@ def pixel_to_camera(u, v, depth, fx, fy, cx, cy):
     x = (u - cx) * depth / fx
     y = (v - cy) * depth / fy
     return x, y, depth
+
+def pose_to_transform(tx, ty, tz, qx, qy, qz, qw):
+    """将 TUM 位姿转换为相机坐标系到世界坐标系的 4×4 变换矩阵。"""
+    quaternion = np.array([qx, qy, qz, qw], dtype=np.float64)
+    quaternion /= np.linalg.norm(quaternion)
+    qx, qy, qz, qw = quaternion
+
+    rotation = np.array([
+        [
+            1 - 2 * (qy**2 + qz**2),
+            2 * (qx * qy - qz * qw),
+            2 * (qx * qz + qy * qw),
+        ],
+        [
+            2 * (qx * qy + qz * qw),
+            1 - 2 * (qx**2 + qz**2),
+            2 * (qy * qz - qx * qw),
+        ],
+        [
+            2 * (qx * qz - qy * qw),
+            2 * (qy * qz + qx * qw),
+            1 - 2 * (qx**2 + qy**2),
+        ],
+    ])
+
+    transform = np.eye(4)
+    transform[:3, :3] = rotation
+    transform[:3, 3] = [tx, ty, tz]
+    return transform

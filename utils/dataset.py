@@ -39,3 +39,22 @@ def load_rgbd_frame(dataset_dir, frame_index):
     if rgb is None or depth is None:
         raise FileNotFoundError("RGB 或 Depth 图像读取失败，请检查数据集路径")
     return rgb, depth
+
+def read_groundtruth(txt_path):
+    """读取 TUM 相机位姿：timestamp tx ty tz qx qy qz qw。"""
+    poses = []
+
+    with open(txt_path, "r", encoding="utf-8") as file:
+        for line in file:
+            line = line.strip()
+
+            if not line or line.startswith("#"):
+                continue
+
+            values = [float(value) for value in line.split()]
+            timestamp = values[0]
+            tx, ty, tz = values[1:4]
+            qx, qy, qz, qw = values[4:8]
+            poses.append((timestamp, tx, ty, tz, qx, qy, qz, qw))
+
+    return poses
