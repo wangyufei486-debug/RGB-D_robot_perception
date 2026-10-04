@@ -1,0 +1,19 @@
+# Python 缓存与虚拟环境
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# 编辑器与系统文件
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# 本地环境配置
+.env
+
+# TUM RGB-D 数据集体积较大，不提交到 GitHub
+data/
+
