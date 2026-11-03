@@ -1,120 +1,106 @@
-# RGB-D Robot Perception
+# RGB-D 多帧三维目标感知与点云融合
 
-这是一个面向机器人视觉入门的 RGB-D 三维目标感知项目。项目使用 YOLO26 完成二维实例分割，结合 TUM RGB-D 数据集的深度图和相机位姿，将多帧场景与目标点云变换到统一世界坐标系，最后使用 Open3D 完成点云融合、目标定位和三维包围盒显示。
+本项目使用 TUM RGB-D 数据集、YOLO26 实例分割和 Open3D，完成场景与目标点云生成、目标三维定位和多帧融合。项目提供两个独立入口：`main.py` 使用数据集 Groundtruth 位姿融合；`main_icp.py` 使用相邻帧 Point-to-Point ICP 估计位姿并融合，以便学习和比较两种方式。
 
-这个项目也是我学习机器人视觉的实践记录。代码没有直接从完整框架开始，而是按照“二维检测 → RGB-D 读取 → 场景点云 → 目标点云 → 完整三维感知”的顺序逐步实现。四个 `test*.py` 文件保留了每个阶段的学习代码，`main.py` 则是整理后的正式运行入口。
+## 功能
 
-## 项目实现效果
+- 根据时间戳匹配 RGB 图像和最近的深度图，并生成彩色场景点云。
+- 使用 YOLO26 实例分割提取指定类别，结合深度图获得目标三维点云和中心附近的深度估计。
+- 对目标点云进行体素降采样、统计滤波和 DBSCAN 聚类，计算三维中心、AABB 和 OBB。
+- 使用 Groundtruth 或相邻帧 ICP 位姿，将多帧场景与目标点云变换到统一坐标系并融合。
+- 保存二维分割图、目标点云 PLY 和 Open3D 视图截图。
 
-当前程序可以完成以下流程：
+## 两种融合方式
 
-- 读取 TUM RGB-D 数据集并匹配时间戳最接近的 RGB 和 Depth 图像
-- 根据时间戳匹配相机 groundtruth 位姿
-- 使用 YOLO26 对 RGB 图像进行实例分割
-- 计算目标中心附近的深度中位数
-- 将像素坐标转换为相机坐标系下的三维坐标
-- 根据实例分割 Mask 提取目标三维点云
-- 对目标点云进行体素降采样和统计滤波
-- 使用 DBSCAN 保留目标的最大点云簇
-- 将多帧场景和目标点云变换到统一世界坐标系
-- 融合 50 帧点云并计算目标三维中心、AABB 和 OBB
-- 在 Open3D 中以红色显示目标点云
-- 将二维实例分割结果保存到 `outputs/2D/`
-- 将 Open3D 三维视图保存到 `outputs/3D/`
-- 将处理后的目标点云保存为 `outputs/point/` 中的 PLY 文件
+**Groundtruth 融合（`main.py`）**：为每个 RGB 帧匹配最近的相机位姿，将该帧点云从相机坐标系变换到 Groundtruth 世界坐标系。RGB 与位姿时间差超过 `0.02` 秒时跳过该帧。
 
-## 学习与编写历程
+**ICP 融合（`main_icp.py`）**：不读取 Groundtruth。先在独立子进程中，用降采样后的场景点云执行相邻帧 Point-to-Point ICP：当前帧为源点云，上一处理帧为目标点云，初始变换为单位矩阵。将每次得到的“当前帧到上一帧”变换依次累乘，得到当前帧到首个处理帧坐标系的变换；随后主进程加载累计位姿，进行 YOLO 分割和场景、目标融合。分进程执行用于隔离 ICP 与 YOLO/PyTorch 的 OpenMP 运行库。
 
-### 1. 普通相机目标检测
-
-最开始通过 `test_camera.py` 学习 OpenCV 摄像头读取和 YOLO 目标检测，获取目标的二维检测框、类别、置信度以及中心像素坐标。
-
-这一阶段还使用固定深度值练习了针孔相机模型，理解如何通过相机内参将像素坐标 `(u, v)` 转换为相机坐标系中的 `(X, Y, Z)`。
-
-### 2. RGB-D 图像读取与深度估计
-
-在 `test_RGBD.py` 中加入 TUM RGB-D 数据集，分别读取 `rgb.txt` 和 `depth.txt`，再根据时间戳为每张 RGB 图像匹配时间上最接近的深度图。
-
-为了减小单个深度像素噪声的影响，程序没有直接使用目标中心点的深度，而是读取中心附近的 `7 × 7` 区域，去除无效深度后计算中位数。
-
-### 3. 完整场景点云生成
-
-在 `test_pointcloud.py` 中使用 Open3D 将 RGB 图像和深度图组合为 RGB-D 图像，再根据 Freiburg1 相机内参生成完整场景点云。
-
-这一阶段加入了体素降采样，用较少的点保留场景整体结构，降低后续显示和计算的开销。
-
-### 4. 目标三维点云与三维包围盒
-
-在 `test_object_pointcloud.py` 中将 YOLO 检测升级为实例分割。与直接使用二维检测框相比，实例 Mask 能更准确地保留目标区域，减少检测框内背景点对三维结果的影响。
-
-目标点云生成后，依次进行：
-
-1. 体素降采样，减少重复点；
-2. 统计滤波，去除离群点；
-3. DBSCAN 聚类，保留最大的点云簇；
-4. 计算目标点云三维中心；
-5. 计算 AABB 和 OBB；
-6. 将目标点云染成红色，并与完整场景一起显示。
-
-### 5. 工程化整理
-
-完整流程验证后，将原本集中在 `test_object_pointcloud.py` 中的代码整理为 `main.py + utils` 结构。正式代码按照数据读取、几何计算、点云处理和结果显示划分，同时保留全部测试文件，用于记录功能逐步实现的过程。
-
-### 6. 多帧场景与目标点云融合
-
-在 `muti_frame.py` 中先独立验证多帧场景融合，再加入逐帧实例分割和目标点云融合。验证完成后，将该流程正式整合到 `main.py`。当前默认处理第 `0、2、4 ... 98` 帧，共 50 帧，并利用 TUM groundtruth 位姿将各帧点云转换到统一世界坐标系。
-
-## 处理流程
+ICP 阶段逐帧输出 Fitness 和对应点 RMSE，Fitness 小于 0.7 时给出警告，但仍继续累计位姿。ICP 对初始位置和场景重叠程度敏感，逐帧误差会累积形成漂移。当前 ICP 入口没有 Groundtruth 误差评估、回环检测或全局优化；两个入口的坐标系不同，不能直接把各自输出的目标坐标当作同一坐标系比较。
 
 ```text
-读取 rgb.txt / depth.txt / groundtruth.txt
-          ↓
-匹配时间戳最接近的 RGB-D 图像和相机位姿
-          ↓
-逐帧生成场景点云并转换到世界坐标系
-          ↓
-YOLO26 实例分割 → Mask 反投影为目标点云
-          ↓
-目标点云降采样 → 统计滤波 → DBSCAN 最大簇
-          ↓
-融合多帧场景和目标点云
-          ↓
-计算融合目标中心、AABB 和 OBB 并保存结果
+RGB + Depth → 时间戳匹配 → 场景点云 ──→ Groundtruth 位姿 / 相邻帧 ICP 累计位姿
+       │                                               │
+       └→ YOLO 实例分割 → Mask 目标点云 → 滤波、聚类 ──┤
+                                                       ↓
+                                场景与目标变换、融合 → 中心、包围盒与可视化
 ```
 
-## 实验结果
+## 环境与数据
 
-### 二维实例分割结果
+依赖 Python、NumPy、OpenCV、Open3D 和 Ultralytics。在项目根目录安装：
 
-下面是第 0 帧、`target_class = "keyboard"` 时保存的真实输出。YOLO26 检测到键盘后，使用半透明颜色显示对应的实例分割 Mask。正式流程会保存本次处理的每一帧二维结果。
+```bash
+pip install -r requirements.txt
+```
 
-![第 0 帧二维实例分割结果](outputs/2D/frame_0000_seg.png)
+准备以下文件：
 
-### 三维目标感知结果
+- TUM RGB-D Freiburg1 xyz 数据集，放在 `data/rgbd_dataset_freiburg1_xyz/`，包含 `rgb.txt`、`depth.txt`、RGB 与深度图；Groundtruth 入口还需要 `groundtruth.txt`。
+- YOLO26 实例分割权重 `yolo26n-seg.pt`，放在项目根目录。
 
-程序会在 Open3D 窗口中显示以下内容：
+数据集通过 `.gitignore` 排除，不包含在仓库中。相机内参为 `640 × 480`、`fx=517.3`、`fy=516.5`、`cx=318.6`、`cy=255.3`；深度值除以 `5000.0` 转为米，截断距离为 `5.0` 米。
 
-- 原始颜色的完整场景点云；
-- 红色的键盘目标点云；
-- 绿色的轴对齐包围盒 AABB；
-- 蓝色的旋转包围盒 OBB；
-- 位于世界坐标系原点的三维坐标轴。
+## 运行
 
-程序启动 Open3D 窗口后，会先将默认视角保存到 `outputs/3D/`。调整观察视角后按 `S`，可以使用当前视角覆盖原截图。
+在项目根目录执行：
 
-![50 帧融合三维目标感知结果](outputs/3D/fused_keyboard_50_frames.png)
+```bash
+# 使用 Groundtruth 位姿融合
+python main.py
 
-本次 50 帧运行共成功融合 50 帧场景，其中 39 帧检测到键盘；融合目标最终包含 34,466 个点。点云结果保存在 `outputs/point/`，PLY 文件只包含融合后的目标点云，不保存完整场景点云。
+# 使用 ICP 估计位姿并融合
+python main_icp.py
 
-### 参数实验
+# Groundtruth 融合的帧数与体素大小对比实验
+python parameter_experiment.py
+```
 
-为了观察帧数和体素大小对融合结果的影响，使用 `parameter_experiment.py` 完成了 5 组简单对比。实验均从第 0 帧开始，保持目标类别、相机参数、统计滤波和 DBSCAN 参数不变。表中的 `Voxel Size` 同时用于单帧场景降采样和最终场景融合，目标体素大小保持为该值的一半，与正式程序当前的 `0.01 / 0.005` 参数比例一致。
+两个融合入口默认从第 0 帧开始，每隔 2 帧处理一帧，共 50 帧（第 0、2、…、98 帧），目标类别为 `keyboard`。需要更改时，请分别修改对应入口文件顶部的参数。`main_icp.py` 的模块开头说明仍写有 20 帧，实际默认值以 `num_frames = 50` 为准。
 
-在项目根目录执行 `python parameter_experiment.py` 可以重新运行实验，程序结束后会在终端输出可直接复制到 Markdown 的结果表格。
+| 参数 | 默认值 | 作用 |
+| --- | ---: | --- |
+| `start_frame` / `num_frames` / `frame_step` | `0` / `50` / `2` | 起始帧、处理帧数和采样间隔 |
+| `target_class` | `keyboard` | 目标类别 |
+| `scene_voxel_size` / `fusion_voxel_size` | `0.01` / `0.01` m | 单帧场景及融合场景体素大小 |
+| `object_voxel_size` | `0.005` m | 目标点云体素大小 |
+| `outlier_nb_neighbors` / `outlier_std_ratio` | `20` / `2.0` | 统计滤波参数 |
+| `dbscan_eps` / `dbscan_min_points` | `0.03` m / `10` | DBSCAN 聚类参数 |
+| `icp_voxel_size` | `0.02` m | ICP 所用点云的体素大小 |
+| `icp_threshold` | `0.05` m | ICP 对应点最大距离 |
+| `icp_max_iteration` | `50` | ICP 最大迭代次数 |
 
-运行时间统计图像读取、YOLO 推理、点云生成、滤波、融合和包围盒计算，不包含模型首次加载、结果写入磁盘和 Open3D 窗口等待。时间来自同一台电脑的一次实测，主要用于比较相对变化。
+后三项仅用于 `main_icp.py`。ICP 点云使用较粗的体素，融合仍使用场景和目标各自的体素大小。
 
-| 帧数 | Frame Step | Voxel Size | 融合后场景点数 | 目标点数 | 运行时间 |
+## 输出与可视化
+
+```text
+outputs/
+├── 2D/                     # Groundtruth 入口逐帧分割图
+├── 3D/                     # Groundtruth 入口三维视图
+├── point/                  # Groundtruth 融合目标 PLY
+└── icp/
+    ├── icp_poses.npz       # 帧索引与 ICP 累计 4×4 位姿
+    ├── 2D/                 # ICP 入口逐帧分割图
+    ├── 3D/                 # ICP 融合三维视图
+    └── point/              # ICP 融合目标 PLY
+```
+
+Open3D 显示彩色场景、红色目标点云、绿色 AABB、蓝色 OBB 和坐标轴。窗口创建时保存默认视角；调整视角后按 `S` 可覆盖截图。PLY 文件只保存融合目标点云。再次运行可能覆盖相同名称的输出。
+
+### 示例结果
+
+Groundtruth 融合（50 帧，更新后的三维视图）：
+
+![Groundtruth 50 帧融合更新后的结果](outputs/3D/fused_keyboard_50_frames.png)
+
+ICP 融合：
+
+![ICP 50 帧融合](outputs/icp/3D/fused_icp_keyboard_50_frames.png)
+
+仓库中原有的一次 Groundtruth 50 帧实验记录为：融合 50 帧场景，其中 39 帧检测到键盘，最终目标点云包含 34,466 个点。下面为此前 `parameter_experiment.py` 的单次实测记录；时间不包含模型首次加载、结果写入和窗口等待，数值随环境与运行变化：
+
+| 帧数 | Frame Step | Voxel Size (m) | 融合场景点数 | 目标点数 | 运行时间 |
 | ---: | ---: | ---: | ---: | ---: | ---: |
 | 10 | 2 | 0.010 | 101,580 | 16,229 | 0.85 s |
 | 20 | 2 | 0.010 | 114,729 | 18,486 | 1.43 s |
@@ -122,117 +108,27 @@ YOLO26 实例分割 → Mask 反投影为目标点云
 | 50 | 2 | 0.005 | 1,946,412 | 188,173 | 8.77 s |
 | 50 | 2 | 0.020 | 112,902 | 5,580 | 2.64 s |
 
-**帧数增加：** 在 `Frame Step=2`、`Voxel Size=0.01` 时，处理帧数从 10 增加到 50，场景覆盖范围和目标点数均有所增加，运行时间由 0.85 s 增加到 3.85 s。更多帧能够补充不同视角的信息，但也会增加计算量和重叠区域。
-
-**Voxel Size 增加：** 50 帧条件下，体素大小从 `0.005` 增加到 `0.02` 后，场景点数从 1,946,412 降至 112,902，目标点数从 188,173 降至 5,580，运行时间也随之下降。较大的体素能够显著减少点数并提高处理速度，但会损失目标表面和边缘的几何细节；当前使用的 `0.01` 在点云规模和细节保留之间较为均衡。
+表中体素大小用于单帧和融合场景，目标体素大小为其一半。该表仅描述 Groundtruth 流程，不是 ICP 精度评估。
 
 ## 项目结构
 
 ```text
-RGB-D_robot_perception/
-├── main.py                       # 正式运行入口和参数配置
-├── muti_frame.py                 # 多帧融合功能的独立验证脚本
-├── parameter_experiment.py       # 帧数与体素大小参数对比实验
+├── main.py                  # Groundtruth 多帧融合入口
+├── main_icp.py              # 相邻帧 ICP 位姿估计与多帧融合入口
+├── muti_frame.py            # 多帧融合独立验证脚本
+├── parameter_experiment.py  # Groundtruth 融合参数实验
 ├── utils/
-│   ├── dataset.py                # 数据索引读取与 RGB-D 时间戳匹配
-│   ├── geometry.py               # 深度中位数与像素坐标反投影
-│   ├── pointcloud.py             # 点云生成、滤波、聚类和包围盒
-│   └── visualization.py          # 二维结果保存、三维显示与截图
-├── test_camera.py                # 普通相机与二维目标检测
-├── test_RGBD.py                  # RGB-D 读取和目标深度估计
-├── test_pointcloud.py            # 完整场景点云生成
-├── test_object_pointcloud.py     # 重构前的完整三维感知流程
-├── data/
-│   └── rgbd_dataset_freiburg1_xyz/
-├── outputs/
-│   ├── 2D/                       # 二维实例分割结果
-│   ├── 3D/                       # Open3D 三维视图截图
-│   └── point/                    # 分割并处理后的目标点云 PLY
-├── yolo26n.pt                    # YOLO26 检测模型
-├── yolo26n-seg.pt                # YOLO26 实例分割模型
+│   ├── dataset.py           # 数据索引和时间戳读取
+│   ├── geometry.py          # 深度、反投影与位姿变换
+│   ├── pointcloud.py        # 点云生成、滤波和几何计算
+│   └── visualization.py     # 结果保存与显示
+├── test_camera.py           # 摄像头目标检测学习代码
+├── test_RGBD.py             # RGB-D 读取和深度估计学习代码
+├── test_pointcloud.py       # 场景点云生成学习代码
+├── test_object_pointcloud.py # 目标点云流程学习代码
+├── data/                    # 本地 TUM 数据集，不提交
+├── outputs/                 # 运行结果
 └── requirements.txt
 ```
 
-## 运行环境
-
-主要依赖：
-
-- Python
-- NumPy
-- OpenCV
-- Open3D
-- Ultralytics
-
-建议创建虚拟环境后安装依赖：
-
-```bash
-pip install -r requirements.txt
-```
-
-项目根目录需要包含：
-
-- TUM RGB-D 数据集：`data/rgbd_dataset_freiburg1_xyz/`
-- YOLO26 实例分割权重：`yolo26n-seg.pt`
-
-TUM RGB-D 数据集体积较大，默认通过 `.gitignore` 排除，不随 GitHub 仓库上传。下载数据集后，需要保持 README 项目结构中所示的目录名称。
-
-## 参数配置
-
-可以在 `main.py` 顶部修改以下常用参数：
-
-| 参数 | 当前值 | 作用 |
-| --- | ---: | --- |
-| `start_frame` | `0` | 多帧处理的起始 RGB 帧 |
-| `num_frames` | `50` | 本次需要处理的帧数 |
-| `frame_step` | `2` | 相邻处理帧之间的索引间隔 |
-| `target_class` | `"keyboard"` | 选择需要生成三维点云的目标类别 |
-| `depth_scale` | `5000.0` | 将 TUM 原始深度值转换为米 |
-| `depth_trunc` | `5.0` | 忽略超过 5 米的场景点 |
-| `scene_voxel_size` | `0.01` | 完整场景点云的体素大小 |
-| `fusion_voxel_size` | `0.01` | 多帧场景融合后的体素大小 |
-| `object_voxel_size` | `0.005` | 目标点云的体素大小 |
-| `outlier_nb_neighbors` | `20` | 统计滤波使用的邻域点数 |
-| `outlier_std_ratio` | `2.0` | 统计滤波的标准差阈值 |
-| `dbscan_eps` | `0.03` | DBSCAN 邻域半径，单位为米 |
-| `dbscan_min_points` | `10` | DBSCAN 形成聚类所需的最少点数 |
-
-相机内参使用 TUM Freiburg1 数据集参数：
-
-```text
-fx = 517.3    fy = 516.5
-cx = 318.6    cy = 255.3
-```
-
-## 运行项目
-
-在项目根目录执行：
-
-```bash
-python main.py
-```
-
-运行后会生成以下结果：
-
-```text
-outputs/
-├── 2D/frame_0000_seg.png ... frame_0098_seg.png
-├── 3D/fused_keyboard_50_frames.png
-└── point/fused_keyboard_50_frames.ply
-```
-
-Open3D 窗口中仍可交互查看结果；调整视角后按 `S` 可以重新保存三维截图。
-
-## 当前范围
-
-本项目目前已经完成离线多帧 RGB-D 场景与目标点云融合，只保存融合后的目标点云，暂未加入目标跨帧关联、完整场景点云保存、ROS 或 RealSense 实时相机。
-
-## 未来改进方向
-
-接下来计划在当前多帧融合流程的基础上逐步扩展：
-
-1. **配置与命令行参数**：将数据集路径、帧序号、目标类别和点云参数移到独立配置文件，支持通过命令行选择输入和输出。
-2. **位姿与点云精配准**：在 groundtruth 初始位姿基础上尝试 ICP 等方法，减小多帧点云边缘重影。
-3. **连续目标跟踪**：在多帧处理中关联同一目标，避免不同实例或误检目标被直接融合。
-4. **更稳健的目标点云提取**：结合 Mask 边缘处理、深度范围约束和自适应聚类参数，减少遮挡、深度缺失和背景点造成的误差。
-5. **结果评估**：增加中心位置、包围盒尺寸和点云质量的定量评估，并记录不同参数对结果的影响。
-6. **实时传感器与机器人系统**：在离线数据集流程稳定后，进一步接入 RealSense 和 ROS 2，为机器人抓取、避障或场景理解提供三维感知结果。
+后续可继续评估 ICP 与 Groundtruth 的位姿误差、研究漂移控制和目标跨帧关联，并探索接入实时相机和机器人系统。
